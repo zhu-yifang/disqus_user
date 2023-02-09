@@ -1,4 +1,5 @@
 from playwright.sync_api import sync_playwright
+import csv
 
 
 # input: a page object and a show's url
@@ -11,10 +12,14 @@ def crawl_a_movie(page, movie_url) -> set:
     disqus_url = comment.get_attribute('src')
     page.goto(disqus_url)
     page.wait_for_load_state('networkidle')
-
+    count = 0
     while True:
+        print(count)
+        if count > 300:
+            break
         try:
-            page.click(".load-more-refresh", timeout=1000)
+            page.click(".load-more-refresh", timeout=3000)
+            count += 1
         # if TimeoutError, break
         except:
             break
@@ -46,8 +51,17 @@ def get_all_shows(page, home_url):
     titles_elements = page.query_selector_all('.title')
     shows_urls = set()
     for element in titles_elements:
-        shows_urls.add(element.get_attribute('href'))
+        if element.get_attribute('href'):
+            shows_urls.add(element.get_attribute('href'))
     return shows_urls
+
+
+def is_private(page, user_url):
+    page.goto(user_url)
+    if page.query_selector("p.text-gray.text-medium"):
+        return True
+    else:
+        return False
 
 
 with sync_playwright() as p:
@@ -60,16 +74,28 @@ with sync_playwright() as p:
     page = context.new_page()
 
     user_links = set()
+
     # get all the shows
     site_url = "https://www.fmovies.media"
     home_url = site_url + "/home"
     shows_urls = get_all_shows(page, home_url)
     for show_url in shows_urls:
         # if it's a movie
-        if "movie" in show_url:
-            user_links = crawl_a_movie(page, site_url + show_url)
+        if "series" in show_url:
+            user_links = crawl_series(page, site_url + show_url)
         # if it's a series
         else:
-            user_links = crawl_series(page, site_url + show_url)
-    print(user_links)
+            user_links = crawl_a_movie(page, site_url + show_url)
+
+    # check if the user is private
+    for user_link in user_links:
+        if is_private(page, user_link):
+            user_links.remove(user_link)
+
+    # write into user_link.csv
+    with open('user_links.csv', 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        for user_link in user_links:
+            writer.writerow(user_link)
+
     browser.close()
