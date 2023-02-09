@@ -1,6 +1,4 @@
 from playwright.sync_api import sync_playwright
-import csv
-
 
 # input: a page object and a show's url
 # return: a set of user links
@@ -64,6 +62,21 @@ def is_private(page, user_url):
         return False
 
 
+def remove_private(page, user_links):
+    new_set = set()
+    for user_link in user_links:
+        if not is_private(page, user_link):
+            new_set.add(user_link)
+    return new_set
+
+
+def write_to_csv(user_links):
+    with open('user_links.csv', 'a', newline='') as f:
+        # append all the user_links to the csv file in a new line
+        for user_link in user_links:
+            f.write(user_link + "\n")
+
+
 with sync_playwright() as p:
     # launch browser and pretend to be a normal user
     browser = p.firefox.launch(headless=False)
@@ -73,8 +86,6 @@ with sync_playwright() as p:
     )
     page = context.new_page()
 
-    user_links = set()
-
     # get all the shows
     site_url = "https://www.fmovies.media"
     home_url = site_url + "/home"
@@ -83,19 +94,18 @@ with sync_playwright() as p:
         # if it's a movie
         if "series" in show_url:
             user_links = crawl_series(page, site_url + show_url)
+            # remove private users
+            user_links = remove_private(page, user_links)
+            print(user_links)
+            # write to csv
+            write_to_csv(user_links)
         # if it's a series
         else:
             user_links = crawl_a_movie(page, site_url + show_url)
-
-    # check if the user is private
-    for user_link in user_links:
-        if is_private(page, user_link):
-            user_links.remove(user_link)
-
-    # write into user_link.csv
-    with open('user_links.csv', 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        for user_link in user_links:
-            writer.writerow(user_link)
+            # remove private users
+            user_links = remove_private(page, user_links)
+            print(user_links)
+            # write to csv
+            write_to_csv(user_links)
 
     browser.close()
