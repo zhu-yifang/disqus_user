@@ -1,4 +1,4 @@
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 # input: a page object and a show's url
 # return: a set of user links
@@ -10,16 +10,12 @@ def crawl_a_movie(page, movie_url) -> set:
     disqus_url = comment.get_attribute('src')
     page.goto(disqus_url)
     page.wait_for_load_state('networkidle')
-    count = 0
-    while True:
-        print(count)
-        if count > 300:
-            break
+    # load more comments until the style of ".load-more-refresh" is "display: none"
+    while page.query_selector(".load-more-refresh").get_attribute("style") != "display: none;":
         try:
             page.click(".load-more-refresh", timeout=3000)
-            count += 1
-        # if TimeoutError, break
-        except:
+        except PlaywrightTimeoutError:
+            print("TimeoutError")
             break
     # get all the user_links
     usernames_elements = page.query_selector_all('a[data-action="profile"]')
@@ -88,7 +84,7 @@ def run():
         page = context.new_page()
         
         # test with a series
-        user_links = crawl_series(page, "https://fmovies.media/series/the-last-of-us-x1qo8")
+        # user_links = crawl_series(page, "https://fmovies.media/series/the-last-of-us-x1qo8")
 
 
         # get all the shows
@@ -101,7 +97,7 @@ def run():
                 user_links = crawl_series(page, site_url + show_url)
                 # remove private users
                 user_links = remove_private(page, user_links)
-                print(user_links)
+                # print(user_links)
                 # write to csv
                 write_to_csv(user_links)
             # if it's a series
@@ -109,7 +105,7 @@ def run():
                 user_links = crawl_a_movie(page, site_url + show_url)
                 # remove private users
                 user_links = remove_private(page, user_links)
-                print(user_links)
+                # print(user_links)
                 # write to csv
                 write_to_csv(user_links)
 
@@ -118,3 +114,4 @@ def run():
 
 if __name__ == '__main__':
     run()
+    print("Done")
