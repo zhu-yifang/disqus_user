@@ -80,6 +80,20 @@ def get_user_links(thread, res):
             add_public_links(response, res)
 
 
+def get_iframe_url(url):
+    response = requests.get("https://fmovies.media" + movie_url)
+    soup = BeautifulSoup(response.text, "html.parser")
+    t_i = soup.select_one('#comment')['data-identifier']
+    return f'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i={t_i}&s_o=default#version=7a4d09afbda9f3c44155fc8f6c0532e0'
+
+
+def get_thread_id(url):
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, "html.parser")
+    return json.loads(soup.select_one(
+        '#disqus-threadData').get_text())['response']['thread']['id']
+
+
 # get the html of the homepage
 response = requests.get("https://fmovies.media/home")
 with open('index.html', 'w') as f:
@@ -103,15 +117,9 @@ for title in titles:
 # movies
 for movie_url in movie_urls:
     # get the url to the iframe
-    response = requests.get("https://fmovies.media" + movie_url)
-    soup = BeautifulSoup(response.text, "html.parser")
-    t_i = soup.select_one('#comment')['data-identifier']
-    url = f'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i={t_i}&s_o=default#version=7a4d09afbda9f3c44155fc8f6c0532e0'
+    url = get_iframe_url(movie_url)
     # go the the iframe to get the thread number
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, "html.parser")
-    thread = json.loads(soup.select_one(
-        '#disqus-threadData').get_text())['response']['thread']['id']
+    thread = get_thread_id(url)
     # get the user links of the movie
     user_links = set()
     get_user_links(thread, user_links)
@@ -120,5 +128,12 @@ for movie_url in movie_urls:
         for user_link in user_links:
             f.write(user_link + '\n')
 # series
-for series_url in series_urls:
-    pass
+# for series_url in series_urls:
+#     # get the season numbers of the series
+#     response = requests.get("https://fmovies.media" + series_url)
+#     soup = BeautifulSoup(response.text, "html.parser")
+#     # write soup into index.html
+#     with open('index.html', 'w') as f:
+#         f.write(response.text)
+
+#     break
