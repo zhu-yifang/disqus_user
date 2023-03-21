@@ -81,17 +81,16 @@ def get_user_links(thread, res):
 
 
 def get_iframe_url(url):
-    response = requests.get("https://fmovies.media" + movie_url)
+    response = requests.get("https://fmovies.media" + url)
     soup = BeautifulSoup(response.text, "html.parser")
     t_i = soup.select_one('#comment')['data-identifier']
-    return f'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i={t_i}&s_o=default#version=7a4d09afbda9f3c44155fc8f6c0532e0'
+    return f'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i={t_i}&t_u=https://fmovies.media/watch&s_o=default#version=7a4d09afbda9f3c44155fc8f6c0532e0'
 
 
 def get_thread_id(url):
     response = requests.get(url)
     soup = BeautifulSoup(response.text, "html.parser")
-    return json.loads(soup.select_one(
-        '#disqus-threadData').get_text())['response']['thread']['id']
+    return json.loads(soup.select_one('#disqus-threadData').get_text())['response']['thread']['id']
 
 
 # get the html of the homepage
