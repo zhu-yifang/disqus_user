@@ -124,7 +124,7 @@ for movie_url in movie_urls:
     user_links = set()
     get_user_links(thread, user_links)
     # write the links to a csv file
-    with open('user_links.csv', 'a') as f:
+    with open('user_links_from_movies.csv', 'a') as f:
         for user_link in user_links:
             f.write(user_link + '\n')
 # series
