@@ -1,117 +1,141 @@
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-
-# input: a page object and a show's url
-# return: a set of user links
-def crawl_a_movie(page, movie_url) -> set:
-    page.goto(movie_url)
-    # wait for the iframe to load
-    comment = page.wait_for_selector('iframe[src^="https://disqus.com/embed"]',
-                                     state='attached')
-    disqus_url = comment.get_attribute('src')
-    page.goto(disqus_url)
-    page.wait_for_load_state('networkidle')
-    # load more comments until the style of ".load-more-refresh" is "display: none"
-    while page.query_selector(".load-more-refresh").get_attribute("style") != "display: none;":
-        try:
-            page.click(".load-more-refresh", timeout=3000)
-        except PlaywrightTimeoutError:
-            print("TimeoutError")
-            break
-    # get all the user_links
-    usernames_elements = page.query_selector_all('a[data-action="profile"]')
-    user_links = set()
-    for element in usernames_elements:
-        user_links.add(element.get_attribute('href'))
-    return user_links
+import requests
+import json
+from bs4 import BeautifulSoup
 
 
-def crawl_series(page, series_url):
-    # crawl a series
-    user_links = set()
-    page.goto(series_url + "/1-1")
-    # get the number of seasons by get the last element in the list
-    season_num = page.locator("input[name='season']").locator(
-        "nth=-1").get_attribute("value")
-    # crawl each season
-    for i in range(1, int(season_num) + 1):
-        # crawl a season like a movie
-        season_url = series_url + "/" + str(i) + "-1"
-        user_links = user_links.union(crawl_a_movie(page, season_url))
-    return user_links
+# get 50 comments from a thread
+def get_comments(thread, page_num=1):
+    cookies = {
+        'zeta-ssp-user-id': 'ua-1b7691a4-7f48-335f-b09c-605ff6f6af61',
+        'disqus_unique': '8b1tt0010qek5o',
+        'G_ENABLED_IDPS': 'google',
+        '__jid': '8b5jsg61k1rbbk',
+    }
+
+    headers = {
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive',
+        # 'Cookie': 'zeta-ssp-user-id=ua-1b7691a4-7f48-335f-b09c-605ff6f6af61; disqus_unique=8b1tt0010qek5o; G_ENABLED_IDPS=google; __jid=8b5jsg61k1rbbk',
+        'Referer':
+        'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i=64881&t_u=https%3A%2F%2Ffmovies.media%2Fwatch%2Fvqro2&t_d=FMovies%20%7C%20Watch%20Luther%3A%20The%20Fallen%20Sun%20(2023)%20Online%20Free%20on%20fmovies.media&t_t=FMovies%20%7C%20Watch%20Luther%3A%20The%20Fallen%20Sun%20(2023)%20Online%20Free%20on%20fmovies.media&s_o=default',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'User-Agent':
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
+        'X-Requested-With': 'XMLHttpRequest',
+        'sec-ch-ua':
+        '"Chromium";v="110", "Not A(Brand";v="24", "Google Chrome";v="110"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"macOS"',
+    }
+
+    params = {
+        'limit':
+        '50',
+        'thread':
+        f'{thread}',
+        'forum':
+        'fmoviescomment',
+        'order':
+        'popular',
+        'cursor':
+        f'{page_num}:0:0',
+        'api_key':
+        'E8Uh5l5fHZ6gD8U3KycjAIAk46f68Zw7C6eW8WSjZvCLXebZ7p0r1yrYDrLilk2F',
+    }
+
+    response = json.loads(
+        requests.get('https://disqus.com/api/3.0/threads/listPostsThreaded',
+                     params=params,
+                     cookies=cookies,
+                     headers=headers).text)
+    return response
 
 
-def get_all_shows(page, home_url):
-    page.goto(home_url)
-    titles_elements = page.query_selector_all('.title')
-    shows_urls = set()
-    for element in titles_elements:
-        if element.get_attribute('href'):
-            shows_urls.add(element.get_attribute('href'))
-    return shows_urls
+# add the public links to the set
+def add_public_links(response, res):
+    for post in response['response']:
+        if post['author']['name'] == 'Guest':
+            continue
+        elif post['author']['isPrivate']:
+            continue
+        else:
+            res.add(post['author']['profileUrl'])
 
 
-def is_private(page, user_url):
-    page.goto(user_url)
-    if page.query_selector("p.text-gray.text-medium"):
-        return True
+# get all public user links of a thread
+def get_user_links(thread, res):
+    response = get_comments(thread)
+    add_public_links(response, res)
+    # if there is only one page
+    if response['cursor']['total'] == 1:
+        return
     else:
-        return False
+        page_nums = response['cursor']['total']
+        for i in range(2, page_nums + 1):
+            response = get_comments(thread, i)
+            add_public_links(response, res)
 
 
-def remove_private(page, user_links):
-    new_set = set()
-    for user_link in user_links:
-        if not is_private(page, user_link):
-            new_set.add(user_link)
-    return new_set
+def get_iframe_url(url):
+    response = requests.get("https://fmovies.media" + url)
+    soup = BeautifulSoup(response.text, "html.parser")
+    t_i = soup.select_one('#comment')['data-identifier']
+    return f'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i={t_i}&t_u=https://fmovies.media/watch&s_o=default#version=7a4d09afbda9f3c44155fc8f6c0532e0'
 
 
-def write_to_csv(user_links):
-    with open('user_links.csv', 'a', newline='') as f:
-        # append all the user_links to the csv file in a new line
+def get_thread_id(url):
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, "html.parser")
+    return json.loads(soup.select_one(
+        '#disqus-threadData').get_text())['response']['thread']['id']
+
+def crawl_a_show(url):
+    # get the url to the iframe
+    url = get_iframe_url(url)
+    # go to the iframe to get the thread number
+    thread = get_thread_id(url)
+    print(thread)
+    # get the user links of the movie
+    user_links = set()
+    get_user_links(thread, user_links)
+    # write the links to a csv file
+    with open('user_links.csv', 'a') as f:
         for user_link in user_links:
-            f.write(user_link + "\n")
+            f.write(user_link + '\n')
+
+movie_urls = set()
+series = set()
 
 
-def run():
-    with sync_playwright() as p:
-        # launch browser and pretend to be a normal user
-        browser = p.firefox.launch(headless=False)
-        context = browser.new_context(
-            user_agent=
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36'
-        )
-        page = context.new_page()
-        
-        # test with a series
-        # user_links = crawl_series(page, "https://fmovies.media/series/the-last-of-us-x1qo8")
+# get all the shows at the homepage
+def get_shows_at_home():
+    # get the html of the homepage
+    response = requests.get("https://fmovies.media/home")
+    soup = BeautifulSoup(response.text, "html.parser")
+    shows = soup.select('.item:not(.swiper-slide)')
+    for show in shows:
+        if show.select_one('.type').get_text() == 'Movie':
+            movie_urls.add(show.select_one('a')['href'])
+        else:
+            url = show.select_one('a')['href']
+            seasons = int(show.select_one('.meta').text.split()[1])
+            series.add((url, seasons))
 
+# get the iframe of the comment areas
+# movies
+def crawl_movies():
+    for movie_url in movie_urls:
+        crawl_a_show(movie_url)
 
-        # get all the shows
-        site_url = "https://www.fmovies.media"
-        home_url = site_url + "/home"
-        shows_urls = get_all_shows(page, home_url)
-        for show_url in shows_urls:
-            # if it's a movie
-            if "series" in show_url:
-                user_links = crawl_series(page, site_url + show_url)
-                # remove private users
-                user_links = remove_private(page, user_links)
-                # print(user_links)
-                # write to csv
-                write_to_csv(user_links)
-            # if it's a series
-            else:
-                user_links = crawl_a_movie(page, site_url + show_url)
-                # remove private users
-                user_links = remove_private(page, user_links)
-                # print(user_links)
-                # write to csv
-                write_to_csv(user_links)
-
-        browser.close()
-
+# series
+def crawl_series():
+    for series_url, seasons in series:
+        for season in range(1, seasons + 1):
+            crawl_a_show(series_url + f'/{season}-1')
 
 if __name__ == '__main__':
-    run()
-    print("Done")
+    get_shows_at_home()
+    crawl_series()
