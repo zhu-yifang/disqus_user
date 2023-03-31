@@ -1,9 +1,80 @@
+import grequests
 import requests
 import json
 from bs4 import BeautifulSoup
+import asyncio
+
+movie_urls = set()
+series = set()
 
 
-# get 50 comments from a thread
+# get all the shows at the given url
+def get_shows_at(urls):
+    reqs = (grequests.get(url) for url in urls)
+    responses = grequests.imap(reqs)
+    for response in responses:
+        soup = BeautifulSoup(response.text, "html.parser")
+        shows = soup.select('.item:not(.swiper-slide)')
+        for show in shows:
+            if show.select_one('.type').get_text() == 'Movie':
+                movie_urls.add(show.select_one('a')['href'])
+            else:
+                url = show.select_one('a')['href']
+                seasons = int(show.select_one('.meta').text.split()[1])
+                series.add((url, seasons))
+
+
+def get_iframe_urls(urls):
+    reqs = (grequests.get(url) for url in urls)
+    responses = grequests.imap(reqs)
+    iframe_urls = set()
+    for response in responses:
+        soup = BeautifulSoup(response.text, "html.parser")
+        t_i = soup.select_one('#comment')['data-identifier']
+        iframe_urls.add(
+            f'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i={t_i}&t_u=https://fmovies.media/watch&s_o=default#version=7a4d09afbda9f3c44155fc8f6c0532e0'
+        )
+    return iframe_urls
+
+
+def get_thread_ids(urls):
+    reqs = (grequests.get(url) for url in urls)
+    responses = grequests.imap(reqs)
+    thread_ids = set()
+    for response in responses:
+        soup = BeautifulSoup(response.text, "html.parser")
+        thread_ids.add(
+            json.loads(soup.select_one('#disqus-threadData').get_text())
+            ['response']['thread']['id'])
+    return thread_ids
+
+
+# add the public links to the set
+def add_public_links(response, res):
+    for post in response['response']:
+        if post['author']['name'] == 'Guest':
+            continue
+        elif post['author']['isPrivate']:
+            continue
+        else:
+            res.add(post['author']['profileUrl'])
+
+
+# get all public user links of a thread
+def get_user_links(thread, res):
+    response = get_comments(thread)
+    add_public_links(response, res)
+    # if there is only one page
+    if response['cursor']['total'] == 1:
+        return
+    else:
+        page_nums = response['cursor']['total']
+        for i in range(2, page_nums + 1):
+            response = get_comments(thread, i)
+            add_public_links(response, res)
+
+
+# get 50 comments from a thread with page_num
 def get_comments(thread, page_num=1):
     cookies = {
         'zeta-ssp-user-id': 'ua-1b7691a4-7f48-335f-b09c-605ff6f6af61',
@@ -53,50 +124,11 @@ def get_comments(thread, page_num=1):
                      headers=headers).text)
     return response
 
-
-# add the public links to the set
-def add_public_links(response, res):
-    for post in response['response']:
-        if post['author']['name'] == 'Guest':
-            continue
-        elif post['author']['isPrivate']:
-            continue
-        else:
-            res.add(post['author']['profileUrl'])
-
-
-# get all public user links of a thread
-def get_user_links(thread, res):
-    response = get_comments(thread)
-    add_public_links(response, res)
-    # if there is only one page
-    if response['cursor']['total'] == 1:
-        return
-    else:
-        page_nums = response['cursor']['total']
-        for i in range(2, page_nums + 1):
-            response = get_comments(thread, i)
-            add_public_links(response, res)
-
-
-def get_iframe_url(url):
-    response = requests.get("https://fmovies.media" + url)
-    soup = BeautifulSoup(response.text, "html.parser")
-    t_i = soup.select_one('#comment')['data-identifier']
-    return f'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i={t_i}&t_u=https://fmovies.media/watch&s_o=default#version=7a4d09afbda9f3c44155fc8f6c0532e0'
-
-
-def get_thread_id(url):
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, "html.parser")
-    return json.loads(soup.select_one(
-        '#disqus-threadData').get_text())['response']['thread']['id']
-
 def crawl_a_show(url):
     # get the url to the iframe
-    url = get_iframe_url(url)
+    url = get_iframe_urls(url)
     # go to the iframe to get the thread number
-    thread = get_thread_id(url)
+    thread = get_thread_ids(url)
     print(thread)
     # get the user links of the movie
     user_links = set()
@@ -106,23 +138,6 @@ def crawl_a_show(url):
         for user_link in user_links:
             f.write(user_link + '\n')
 
-movie_urls = set()
-series = set()
-
-
-# get all the shows at the homepage
-def get_shows_at_home():
-    # get the html of the homepage
-    response = requests.get("https://fmovies.media/home")
-    soup = BeautifulSoup(response.text, "html.parser")
-    shows = soup.select('.item:not(.swiper-slide)')
-    for show in shows:
-        if show.select_one('.type').get_text() == 'Movie':
-            movie_urls.add(show.select_one('a')['href'])
-        else:
-            url = show.select_one('a')['href']
-            seasons = int(show.select_one('.meta').text.split()[1])
-            series.add((url, seasons))
 
 # get the iframe of the comment areas
 # movies
@@ -130,12 +145,24 @@ def crawl_movies():
     for movie_url in movie_urls:
         crawl_a_show(movie_url)
 
+
 # series
 def crawl_series():
     for series_url, seasons in series:
         for season in range(1, seasons + 1):
             crawl_a_show(series_url + f'/{season}-1')
 
+
+def get_all_movies():
+    get_shows_at(
+        (f'https://fmovies.media/movies?page={i}' for i in range(1, 1049)))
+
+
+def get_all_series():
+    get_shows_at(
+        (f'https://fmovies.media/tv-series?page={i}' for i in range(1, 287)))
+
+
 if __name__ == '__main__':
-    get_shows_at_home()
-    crawl_series()
+    get_all_series()
+    print(len(series))

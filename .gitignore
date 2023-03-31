@@ -1,2 +1,6 @@
 /.vscode
 /screenshot.png
+# ignore index.html
+/index.html
+# ignore user_links.csv
+/user_links.csv
