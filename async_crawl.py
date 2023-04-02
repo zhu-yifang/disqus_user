@@ -5,6 +5,13 @@ import aiohttp
 from aiohttp import ClientSession
 from asyncio import Queue
 import asyncio
+import logging
+
+logging.basicConfig(
+    filename='async_crawl.log',
+    level=logging.DEBUG,
+    format='%(asctime)s:%(levelname)s:%(message)s',
+)
 
 shows: Queue[str] = Queue()
 iframe_urls: Queue[str] = Queue()
@@ -41,16 +48,17 @@ headers = {
 async def fetch_html(url: str, session: ClientSession, **kwargs) -> str:
     '''Fetches the html from a url and returns it as a string.
     '''
-    # print(f"Fetching {url}...")
+    logging.debug(f"Fetching {url}...")
     response = await session.get(url, **kwargs)
     retry_count = 0
     while response.status != 200:
         if retry_count > 3:
             return
-        print(f"Got response {response.status} from {url}, retrying...")
+        logging.debug(
+            f"Got response {response.status} from {url}, retrying...")
         response = await session.get(url, **kwargs)
         retry_count += 1
-    print(f"Got response {response.status} from {url}")
+    logging.debug(f"Got response {response.status} from {url}")
     html = await response.text()
     return html
 
@@ -59,7 +67,7 @@ async def get_shows_at(url: str, session: ClientSession, **kwargs):
     '''A producer. Get all the shows at the given url
     and add them to the show_urls queue.
     '''
-    print(f"Getting shows at {url}...")
+    logging.debug(f"Getting shows at {url}...")
     html = await fetch_html(url, session, **kwargs)
     soup = BeautifulSoup(html, "html.parser")
     show_urls = soup.select('.item:not(.swiper-slide)')
@@ -75,21 +83,33 @@ async def get_shows_at(url: str, session: ClientSession, **kwargs):
                 await shows.put(f'{url}/{season}-1')
 
 
+# def create_tasks_for_shows(session: ClientSession, **kwargs):
+#     '''create tasks that will get all the movie and series urls
+#     '''
+#     print("Creating tasks to get shows...")
+#     movie_tasks = [
+#         asyncio.create_task(
+#             get_shows_at(f'https://fmovies.media/movies?page={page}', session))
+#         for page in range(1, 1049)
+#     ]
+#     series_task = [
+#         asyncio.create_task(
+#             get_shows_at(f'https://fmovies.media/tv-series?page={page}',
+#                          session, **kwargs)) for page in range(1, 287)
+#     ]
+#     return movie_tasks + series_task
+
+
 def create_tasks_for_shows(session: ClientSession, **kwargs):
     '''create tasks that will get all the movie and series urls
     '''
-    print("Creating tasks to get shows...")
-    movie_tasks = [
-        asyncio.create_task(
-            get_shows_at(f'https://fmovies.media/movies?page={page}', session))
-        for page in range(1, 1049)
-    ]
+    logging.debug("Creating tasks to get shows...")
     series_task = [
         asyncio.create_task(
             get_shows_at(f'https://fmovies.media/tv-series?page={page}',
-                         session, **kwargs)) for page in range(1, 287)
+                         session)) for page in range(1, 287)
     ]
-    return movie_tasks + series_task
+    return series_task
 
 
 async def get_iframe_url(session: ClientSession, **kwargs):
@@ -98,7 +118,7 @@ async def get_iframe_url(session: ClientSession, **kwargs):
     '''
     while True:
         url = await shows.get()
-        print(f"Getting iframe url of {url}...")
+        logging.debug(f"Getting iframe url of {url}...")
         # fetch the html of the show
         html = await fetch_html(f"https://fmovies.media{url}", session,
                                 **kwargs)
@@ -118,7 +138,7 @@ async def get_thread_id(session: ClientSession, **kwargs):
     '''
     while True:
         url = await iframe_urls.get()
-        print(f"Getting thread id of {url}...")
+        logging.debug(f"Getting thread id of {url}...")
         # fetch the html of the iframe
         html = await fetch_html(url, session, **kwargs)
         soup = BeautifulSoup(html, "html.parser")
@@ -136,7 +156,7 @@ async def get_comments(session: ClientSession, **kwargs):
     '''
     while True:
         thread_id = await thread_ids.get()
-        print(f"Getting comments of {thread_id}...")
+        logging.debug(f"Getting comments of {thread_id} page 1...")
         params = {
             'limit':
             '50',
@@ -178,6 +198,7 @@ async def get_comments(session: ClientSession, **kwargs):
                     'api_key':
                     'E8Uh5l5fHZ6gD8U3KycjAIAk46f68Zw7C6eW8WSjZvCLXebZ7p0r1yrYDrLilk2F',
                 }
+                logging.debug(f"Getting comments of {thread_id} page {i}...")
                 response = json.loads(await fetch_html(
                     'https://disqus.com/api/3.0/threads/listPostsThreaded',
                     session,
@@ -188,17 +209,20 @@ async def get_comments(session: ClientSession, **kwargs):
         thread_ids.task_done()
 
 
-async def add_user_links(response):
+async def add_user_links(response: dict):
     '''A helper function for get_comments that adds the user links to
     user_links set
     '''
     for post in response['response']:
-        if post['author']['name'] == 'Guest':
-            continue
-        elif post['author']['isPrivate']:
-            continue
-        else:
-            await user_links.put(post['author']['profileUrl'])
+        try:
+            if post['author']['name'] == 'Guest':
+                continue
+            elif 'isPrivate' in post['author'] and post['author']['isPrivate'] is True:
+                continue
+            else:
+                await user_links.put(post['author']['profileUrl'])
+        except KeyError:
+            logging.error(response)
 
 
 async def write_user_links():
@@ -206,7 +230,7 @@ async def write_user_links():
     '''
     while True:
         link = await user_links.get()
-        print(f"Writing {link} to file...")
+        logging.debug(f"Writing {link} to file...")
         async with aiofiles.open('user_links.csv', 'a') as f:
             await f.write(link + '\n')
         user_links.task_done()
@@ -220,19 +244,19 @@ async def main():
         show_url_getters = create_tasks_for_shows(session)
 
         iframe_workers = [
-            asyncio.create_task(get_iframe_url(session)) for _ in range(100)
+            asyncio.create_task(get_iframe_url(session)) for _ in range(1000)
         ]
 
         thread_id_workers = [
-            asyncio.create_task(get_thread_id(session)) for _ in range(100)
+            asyncio.create_task(get_thread_id(session)) for _ in range(1000)
         ]
 
         comment_workers = [
-            asyncio.create_task(get_comments(session)) for _ in range(100)
+            asyncio.create_task(get_comments(session)) for _ in range(1000)
         ]
 
         user_link_writers = [
-            asyncio.create_task(write_user_links()) for _ in range(100)
+            asyncio.create_task(write_user_links()) for _ in range(1000)
         ]
 
         await asyncio.gather(*show_url_getters)
