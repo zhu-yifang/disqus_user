@@ -6,8 +6,8 @@ from aiohttp import ClientSession
 from asyncio import Queue
 import asyncio
 
-movie_urls: Queue[str] = Queue()
-series_tuples: Queue[tuple[str, int]] = Queue()
+shows: Queue[str] = Queue()
+iframe_urls: Queue[str] = Queue()
 
 
 async def fetch_html(url: str, session: ClientSession, **kwargs) -> str:
@@ -15,7 +15,9 @@ async def fetch_html(url: str, session: ClientSession, **kwargs) -> str:
     '''
     print(f"Fetching {url}...")
     response = await session.get(url, **kwargs)
-    response.raise_for_status()
+    while response.status != 200:
+        print(f"Got response {response.status} from {url}, retrying...")
+        response = await session.get(url, **kwargs)
     print(f"Got response {response.status} from {url}")
     html = await response.text()
     return html
@@ -23,24 +25,28 @@ async def fetch_html(url: str, session: ClientSession, **kwargs) -> str:
 
 async def get_shows_at(url: str, session: ClientSession, **kwargs):
     '''A producer. Get all the shows at the given url
-    and add them to the movie_urls or the series_tuples queue.
+    and add them to the show_urls queue.
     '''
     print(f"Getting shows at {url}...")
     html = await fetch_html(url, session, **kwargs)
     soup = BeautifulSoup(html, "html.parser")
     show_urls = soup.select('.item:not(.swiper-slide)')
     for show in show_urls:
+        # if the show is a movie, add it to the queue
         if show.select_one('.type').get_text() == 'Movie':
-            await movie_urls.put(show.select_one('a')['href'])
+            await shows.put(show.select_one('a')['href'])
         else:
+            # if the show is a series, add all the seasons to the queue
             url = show.select_one('a')['href']
             seasons = int(show.select_one('.meta').text.split()[1])
-            await series_tuples.put((url, seasons))
+            for season in range(1, seasons + 1):
+                await shows.put(f'{url}/season-{season}')
 
 
 def create_tasks_for_shows(session: ClientSession, **kwargs):
     '''create tasks that will get all the movie and series urls
     '''
+    print("Creating tasks to get shows...")
     movie_tasks = [
         asyncio.create_task(
             get_shows_at(f'https://fmovies.media/movies?page={page}', session))
@@ -52,6 +58,26 @@ def create_tasks_for_shows(session: ClientSession, **kwargs):
                          session, **kwargs)) for page in range(1, 287)
     ]
     return movie_tasks + series_task
+
+
+async def get_iframe_url(session: ClientSession, **kwargs):
+    '''When there is a show url in the queue, get the url and
+    add the iframe url to another queue.
+    '''
+    while True:
+        print(f"Getting iframe url...")
+        url = await shows.get()
+        # fetch the html of the show
+        html = await fetch_html(f"https://fmovies.media{url}", session,
+                                **kwargs)
+        soup = BeautifulSoup(html, "html.parser")
+        # get the iframe url
+        t_i = soup.select_one('#comment')['data-identifier']
+        assert t_i is not None
+        iframe_urls.put(
+            f'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i={t_i}&t_u=https://fmovies.media/watch&s_o=default#version=7a4d09afbda9f3c44155fc8f6c0532e0'
+        )
+        shows.task_done()
 
 
 # get 50 comments from a thread
@@ -129,14 +155,6 @@ def get_user_links(thread, res):
             response = get_comments(thread, i)
             add_public_links(response, res)
 
-
-def get_iframe_url(url):
-    response = requests.get("https://fmovies.media" + url)
-    soup = BeautifulSoup(response.text, "html.parser")
-    t_i = soup.select_one('#comment')['data-identifier']
-    return f'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i={t_i}&t_u=https://fmovies.media/watch&s_o=default#version=7a4d09afbda9f3c44155fc8f6c0532e0'
-
-
 def get_thread_id(url):
     response = requests.get(url)
     soup = BeautifulSoup(response.text, "html.parser")
@@ -159,27 +177,16 @@ def crawl_a_show(url):
             f.write(user_link + '\n')
 
 
-# get the iframe of the comment areas
-# movies
-def crawl_movies():
-    for movie_url in movie_urls:
-        crawl_a_show(movie_url)
-
-
-# series
-def crawl_series():
-    for series_url, seasons in series:
-        for season in range(1, seasons + 1):
-            crawl_a_show(series_url + f'/{season}-1')
-
-
 async def main():
     # Solved the problem of aiohttp.client_exceptions.ClientConnectorCertificateError
     # by setting connector=aiohttp.TCPConnector(ssl=False)
     async with ClientSession(connector=aiohttp.TCPConnector(
             ssl=False)) as session:
-        tasks = create_tasks_for_shows(session)
-        await asyncio.gather(*tasks)
+        show_url_getters = create_tasks_for_shows(session)
+        [asyncio.create_task(get_iframe_url(session)) for _ in range(1000)]
+        await asyncio.gather(*show_url_getters)
+        # blocks until all the tasks in shows are done
+        await shows.join()
 
 if __name__ == '__main__':
     # get the url of all the movies and series
