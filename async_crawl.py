@@ -8,6 +8,7 @@ import asyncio
 
 shows: Queue[str] = Queue()
 iframe_urls: Queue[str] = Queue()
+thread_ids: Queue[str] = Queue()
 
 
 async def fetch_html(url: str, session: ClientSession, **kwargs) -> str:
@@ -15,9 +16,13 @@ async def fetch_html(url: str, session: ClientSession, **kwargs) -> str:
     '''
     print(f"Fetching {url}...")
     response = await session.get(url, **kwargs)
+    retry_count = 0
     while response.status != 200:
+        if retry_count > 3:
+            return
         print(f"Got response {response.status} from {url}, retrying...")
         response = await session.get(url, **kwargs)
+        retry_count += 1
     print(f"Got response {response.status} from {url}")
     html = await response.text()
     return html
@@ -40,7 +45,7 @@ async def get_shows_at(url: str, session: ClientSession, **kwargs):
             url = show.select_one('a')['href']
             seasons = int(show.select_one('.meta').text.split()[1])
             for season in range(1, seasons + 1):
-                await shows.put(f'{url}/season-{season}')
+                await shows.put(f'{url}/{season}-1')
 
 
 def create_tasks_for_shows(session: ClientSession, **kwargs):
@@ -65,8 +70,8 @@ async def get_iframe_url(session: ClientSession, **kwargs):
     add the iframe url to another queue.
     '''
     while True:
-        print(f"Getting iframe url...")
         url = await shows.get()
+        print(f"Getting iframe url of {url}...")
         # fetch the html of the show
         html = await fetch_html(f"https://fmovies.media{url}", session,
                                 **kwargs)
@@ -78,6 +83,25 @@ async def get_iframe_url(session: ClientSession, **kwargs):
             f'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i={t_i}&t_u=https://fmovies.media/watch&s_o=default#version=7a4d09afbda9f3c44155fc8f6c0532e0'
         )
         shows.task_done()
+
+
+async def get_thread_id(session: ClientSession, **kwargs):
+    '''When there is an iframe url in the queue, get the url and
+    add the thread id to another queue.
+    '''
+    while True:
+        url = await iframe_urls.get()
+        print(f"Getting thread id of {url}...")
+        # fetch the html of the iframe
+        html = await fetch_html(url, session, **kwargs)
+        soup = BeautifulSoup(html, "html.parser")
+        # get the thread id
+        thread_id = json.loads(
+            soup.select_one(
+                '#disqus-threadData').get_text())['response']['thread']['id']
+        assert thread_id is not None
+        thread_ids.put(thread_id)
+        iframe_urls.task_done()
 
 
 # get 50 comments from a thread
@@ -155,27 +179,6 @@ def get_user_links(thread, res):
             response = get_comments(thread, i)
             add_public_links(response, res)
 
-def get_thread_id(url):
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, "html.parser")
-    return json.loads(soup.select_one(
-        '#disqus-threadData').get_text())['response']['thread']['id']
-
-
-def crawl_a_show(url):
-    # get the url to the iframe
-    url = get_iframe_url(url)
-    # go to the iframe to get the thread number
-    thread = get_thread_id(url)
-    print(thread)
-    # get the user links of the movie
-    user_links = set()
-    get_user_links(thread, user_links)
-    # write the links to a csv file
-    with open('user_links.csv', 'a') as f:
-        for user_link in user_links:
-            f.write(user_link + '\n')
-
 
 async def main():
     # Solved the problem of aiohttp.client_exceptions.ClientConnectorCertificateError
@@ -183,10 +186,10 @@ async def main():
     async with ClientSession(connector=aiohttp.TCPConnector(
             ssl=False)) as session:
         show_url_getters = create_tasks_for_shows(session)
-        [asyncio.create_task(get_iframe_url(session)) for _ in range(1000)]
+        [asyncio.create_task(get_iframe_url(session)) for _ in range(5000)]
+        [asyncio.create_task(get_thread_id(session)) for _ in range(5000)]
         await asyncio.gather(*show_url_getters)
-        # blocks until all the tasks in shows are done
-        await shows.join()
+
 
 if __name__ == '__main__':
     # get the url of all the movies and series
