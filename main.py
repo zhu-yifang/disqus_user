@@ -10,6 +10,7 @@ series = set()
 
 # get all the shows at the given url
 def get_shows_at(urls):
+    print('Getting shows at: ', urls)
     reqs = (grequests.get(url) for url in urls)
     responses = grequests.imap(reqs)
     for response in responses:
@@ -25,10 +26,12 @@ def get_shows_at(urls):
 
 
 def get_iframe_urls(urls):
-    reqs = (grequests.get(url) for url in urls)
+    print('Getting iframe urls')
+    reqs = (grequests.get(f"https://fmovies.media{url}") for url, _ in urls)
     responses = grequests.imap(reqs)
     iframe_urls = set()
     for response in responses:
+        print(response)
         soup = BeautifulSoup(response.text, "html.parser")
         t_i = soup.select_one('#comment')['data-identifier']
         iframe_urls.add(
@@ -38,6 +41,7 @@ def get_iframe_urls(urls):
 
 
 def get_thread_ids(urls):
+    print('Getting thread ids: ', urls)
     reqs = (grequests.get(url) for url in urls)
     responses = grequests.imap(reqs)
     thread_ids = set()
@@ -51,6 +55,7 @@ def get_thread_ids(urls):
 
 # add the public links to the set
 def add_public_links(response, res):
+    print('Adding public links')
     for post in response['response']:
         if post['author']['name'] == 'Guest':
             continue
@@ -62,6 +67,7 @@ def add_public_links(response, res):
 
 # get all public user links of a thread
 def get_user_links(thread, res):
+    print('Getting user links')
     response = get_comments(thread)
     add_public_links(response, res)
     # if there is only one page
@@ -76,6 +82,7 @@ def get_user_links(thread, res):
 
 # get 50 comments from a thread with page_num
 def get_comments(thread, page_num=1):
+    print(f'Getting comments of {thread} at page {page_num}')
     cookies = {
         'zeta-ssp-user-id': 'ua-1b7691a4-7f48-335f-b09c-605ff6f6af61',
         'disqus_unique': '8b1tt0010qek5o',
@@ -124,7 +131,9 @@ def get_comments(thread, page_num=1):
                      headers=headers).text)
     return response
 
+
 def crawl_a_show(url):
+    print('Crawling a show: ', url)
     # get the url to the iframe
     url = get_iframe_urls(url)
     # go to the iframe to get the thread number
@@ -142,27 +151,35 @@ def crawl_a_show(url):
 # get the iframe of the comment areas
 # movies
 def crawl_movies():
+    print('Crawling movies')
     for movie_url in movie_urls:
         crawl_a_show(movie_url)
 
 
 # series
 def crawl_series():
+    print('Crawling series')
     for series_url, seasons in series:
         for season in range(1, seasons + 1):
             crawl_a_show(series_url + f'/{season}-1')
 
 
+# get all movies urls
 def get_all_movies():
+    print('Getting all movies')
     get_shows_at(
         (f'https://fmovies.media/movies?page={i}' for i in range(1, 1049)))
 
 
+# get all series urls
 def get_all_series():
+    print('Getting all series')
     get_shows_at(
         (f'https://fmovies.media/tv-series?page={i}' for i in range(1, 287)))
 
 
 if __name__ == '__main__':
     get_all_series()
-    print(len(series))
+    series_iframes = get_iframe_urls(series)
+    series_thread_ids = get_thread_ids(series_iframes)
+

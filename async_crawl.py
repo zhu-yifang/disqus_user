@@ -1,6 +1,6 @@
-import requests
 import json
 from bs4 import BeautifulSoup
+import aiofiles
 import aiohttp
 from aiohttp import ClientSession
 from asyncio import Queue
@@ -9,12 +9,39 @@ import asyncio
 shows: Queue[str] = Queue()
 iframe_urls: Queue[str] = Queue()
 thread_ids: Queue[str] = Queue()
+user_links: Queue[str] = Queue()
+
+cookies = {
+    'zeta-ssp-user-id': 'ua-1b7691a4-7f48-335f-b09c-605ff6f6af61',
+    'disqus_unique': '8b1tt0010qek5o',
+    'G_ENABLED_IDPS': 'google',
+    '__jid': '8b5jsg61k1rbbk',
+}
+
+headers = {
+    'Accept': 'application/json, text/javascript, */*; q=0.01',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Connection': 'keep-alive',
+    # 'Cookie': 'zeta-ssp-user-id=ua-1b7691a4-7f48-335f-b09c-605ff6f6af61; disqus_unique=8b1tt0010qek5o; G_ENABLED_IDPS=google; __jid=8b5jsg61k1rbbk',
+    'Referer':
+    'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i=64881&t_u=https%3A%2F%2Ffmovies.media%2Fwatch%2Fvqro2&t_d=FMovies%20%7C%20Watch%20Luther%3A%20The%20Fallen%20Sun%20(2023)%20Online%20Free%20on%20fmovies.media&t_t=FMovies%20%7C%20Watch%20Luther%3A%20The%20Fallen%20Sun%20(2023)%20Online%20Free%20on%20fmovies.media&s_o=default',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
+    'User-Agent':
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
+    'X-Requested-With': 'XMLHttpRequest',
+    'sec-ch-ua':
+    '"Chromium";v="110", "Not A(Brand";v="24", "Google Chrome";v="110"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"macOS"',
+}
 
 
 async def fetch_html(url: str, session: ClientSession, **kwargs) -> str:
     '''Fetches the html from a url and returns it as a string.
     '''
-    print(f"Fetching {url}...")
+    # print(f"Fetching {url}...")
     response = await session.get(url, **kwargs)
     retry_count = 0
     while response.status != 200:
@@ -79,7 +106,7 @@ async def get_iframe_url(session: ClientSession, **kwargs):
         # get the iframe url
         t_i = soup.select_one('#comment')['data-identifier']
         assert t_i is not None
-        iframe_urls.put(
+        await iframe_urls.put(
             f'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i={t_i}&t_u=https://fmovies.media/watch&s_o=default#version=7a4d09afbda9f3c44155fc8f6c0532e0'
         )
         shows.task_done()
@@ -100,84 +127,89 @@ async def get_thread_id(session: ClientSession, **kwargs):
             soup.select_one(
                 '#disqus-threadData').get_text())['response']['thread']['id']
         assert thread_id is not None
-        thread_ids.put(thread_id)
+        await thread_ids.put(thread_id)
         iframe_urls.task_done()
 
 
-# get 50 comments from a thread
-def get_comments(thread, page_num=1):
-    cookies = {
-        'zeta-ssp-user-id': 'ua-1b7691a4-7f48-335f-b09c-605ff6f6af61',
-        'disqus_unique': '8b1tt0010qek5o',
-        'G_ENABLED_IDPS': 'google',
-        '__jid': '8b5jsg61k1rbbk',
-    }
+async def get_comments(session: ClientSession, **kwargs):
+    '''When there is a thread id in the queue, get the comments
+    '''
+    while True:
+        thread_id = await thread_ids.get()
+        print(f"Getting comments of {thread_id}...")
+        params = {
+            'limit':
+            '50',
+            'thread':
+            f'{thread_id}',
+            'forum':
+            'fmoviescomment',
+            'order':
+            'popular',
+            'cursor':
+            f'1:0:0',
+            'api_key':
+            'E8Uh5l5fHZ6gD8U3KycjAIAk46f68Zw7C6eW8WSjZvCLXebZ7p0r1yrYDrLilk2F',
+        }
+        # fetch the comments and load them as json
+        response = json.loads(await fetch_html(
+            'https://disqus.com/api/3.0/threads/listPostsThreaded',
+            session,
+            params=params,
+            cookies=cookies,
+            headers=headers))
+        # add user_links
+        await add_user_links(response)
+        # check if there are more comments
+        if response['cursor']['total'] > 1:
+            page_nums = response['cursor']['total']
+            for i in range(2, page_nums + 1):
+                params = {
+                    'limit':
+                    '50',
+                    'thread':
+                    f'{thread_id}',
+                    'forum':
+                    'fmoviescomment',
+                    'order':
+                    'popular',
+                    'cursor':
+                    f'{i}:0:0',
+                    'api_key':
+                    'E8Uh5l5fHZ6gD8U3KycjAIAk46f68Zw7C6eW8WSjZvCLXebZ7p0r1yrYDrLilk2F',
+                }
+                response = json.loads(await fetch_html(
+                    'https://disqus.com/api/3.0/threads/listPostsThreaded',
+                    session,
+                    params=params,
+                    cookies=cookies,
+                    headers=headers))
+                await add_user_links(response)
+        thread_ids.task_done()
 
-    headers = {
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Connection': 'keep-alive',
-        # 'Cookie': 'zeta-ssp-user-id=ua-1b7691a4-7f48-335f-b09c-605ff6f6af61; disqus_unique=8b1tt0010qek5o; G_ENABLED_IDPS=google; __jid=8b5jsg61k1rbbk',
-        'Referer':
-        'https://disqus.com/embed/comments/?base=default&f=fmoviescomment&t_i=64881&t_u=https%3A%2F%2Ffmovies.media%2Fwatch%2Fvqro2&t_d=FMovies%20%7C%20Watch%20Luther%3A%20The%20Fallen%20Sun%20(2023)%20Online%20Free%20on%20fmovies.media&t_t=FMovies%20%7C%20Watch%20Luther%3A%20The%20Fallen%20Sun%20(2023)%20Online%20Free%20on%20fmovies.media&s_o=default',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
-        'User-Agent':
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
-        'X-Requested-With': 'XMLHttpRequest',
-        'sec-ch-ua':
-        '"Chromium";v="110", "Not A(Brand";v="24", "Google Chrome";v="110"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"macOS"',
-    }
 
-    params = {
-        'limit':
-        '50',
-        'thread':
-        f'{thread}',
-        'forum':
-        'fmoviescomment',
-        'order':
-        'popular',
-        'cursor':
-        f'{page_num}:0:0',
-        'api_key':
-        'E8Uh5l5fHZ6gD8U3KycjAIAk46f68Zw7C6eW8WSjZvCLXebZ7p0r1yrYDrLilk2F',
-    }
-
-    response = json.loads(
-        requests.get('https://disqus.com/api/3.0/threads/listPostsThreaded',
-                     params=params,
-                     cookies=cookies,
-                     headers=headers).text)
-    return response
-
-
-# add the public links to the set
-def add_public_links(response, res):
+async def add_user_links(response):
+    '''A helper function for get_comments that adds the user links to
+    user_links set
+    '''
     for post in response['response']:
         if post['author']['name'] == 'Guest':
             continue
         elif post['author']['isPrivate']:
             continue
         else:
-            res.add(post['author']['profileUrl'])
+            await user_links.put(post['author']['profileUrl'])
 
 
-# get all public user links of a thread
-def get_user_links(thread, res):
-    response = get_comments(thread)
-    add_public_links(response, res)
-    # if there is only one page
-    if response['cursor']['total'] == 1:
-        return
-    else:
-        page_nums = response['cursor']['total']
-        for i in range(2, page_nums + 1):
-            response = get_comments(thread, i)
-            add_public_links(response, res)
+async def write_user_links():
+    '''A worker that writes the user links to a file asynchrnously
+    '''
+    while True:
+        link = await user_links.get()
+        print(f"Writing {link} to file...")
+        async with aiofiles.open('user_links.csv', 'a') as f:
+            await f.write(link + '\n')
+        user_links.task_done()
 
 
 async def main():
@@ -186,9 +218,29 @@ async def main():
     async with ClientSession(connector=aiohttp.TCPConnector(
             ssl=False)) as session:
         show_url_getters = create_tasks_for_shows(session)
-        [asyncio.create_task(get_iframe_url(session)) for _ in range(5000)]
-        [asyncio.create_task(get_thread_id(session)) for _ in range(5000)]
+
+        iframe_workers = [
+            asyncio.create_task(get_iframe_url(session)) for _ in range(100)
+        ]
+
+        thread_id_workers = [
+            asyncio.create_task(get_thread_id(session)) for _ in range(100)
+        ]
+
+        comment_workers = [
+            asyncio.create_task(get_comments(session)) for _ in range(100)
+        ]
+
+        user_link_writers = [
+            asyncio.create_task(write_user_links()) for _ in range(100)
+        ]
+
         await asyncio.gather(*show_url_getters)
+
+        await shows.join()
+        await iframe_urls.join()
+        await thread_ids.join()
+        await user_links.join()
 
 
 if __name__ == '__main__':
