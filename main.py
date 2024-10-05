@@ -128,7 +128,7 @@ def get_comments(thread, page_num=1):
         requests.get('https://disqus.com/api/3.0/threads/listPostsThreaded',
                      params=params,
                      cookies=cookies,
-                     headers=headers).text)
+                     headers=headers, timeout=60).text)
     return response
 
 
